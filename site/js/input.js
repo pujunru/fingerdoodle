@@ -15,6 +15,11 @@
 //   two-finger slide   ctrl+wheel noise, no position pointercancel, then a
 //                                                    left drag at the centroid
 //
+// Chrome's two-finger slide cannot be recovered: the page gets a fixed position,
+// no horizontal delta and no pointer events, so the direction never arrives. The
+// noise looks like a very small pinch, and a dead zone keeps it from wobbling the
+// zoom. A slide that dies in the dead zone is reported as slideIgnored.
+//
 // Chrome's quick drag is the hard case: no pointerdown ever fires, which is why
 // ordinary drawing sites ignore the finger. Three facts make it recoverable:
 //
@@ -38,6 +43,9 @@ const SPEED_WINDOW = 5;           // recent samples used to estimate finger spee
 const GESTURE_TIMEOUT_MS = 600;   // end if the cursor-restore signal never arrives
 const SECOND_FINGER_MS = 250;     // Safari: pointercancel, then pointerdown = two fingers
 const WHEEL_LINE_PX = 16;
+const PINCH_DEAD_ZONE = 20;       // wheel units of net pinch; slides stayed under 17
+const PINCH_GAP_MS = 120;         // a longer silence ends a pinch
+const SLIDE_MIN_SAMPLES = 15;     // fewer than this is a stray touch, not a slide
 
 const near = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by) <= NEAR_PX;
 
@@ -54,6 +62,7 @@ export class InputInterpreter {
     this.wheel = null;           // the finger-as-wheel gesture in progress
     this.touches = new Map();    // real touch or pen pointers, on hardware that has them
     this.pinch = null;
+    this.pinchGate = null;       // Chrome pinch waiting to clear the dead zone
   }
 
   // ---- pointers ----------------------------------------------------------
@@ -122,7 +131,7 @@ export class InputInterpreter {
   wheelEvent(e) {
     if (e.ctrlKey) {
       this.#endWheel();
-      if (e.overSurface) this.out.zoom(Math.exp(-e.deltaY / 100), e.x, e.y);
+      if (e.overSurface) this.#ctrlWheel(e);
       return;
     }
     if (e.deltaMode !== 0) {
@@ -158,6 +167,26 @@ export class InputInterpreter {
       return;
     }
     this.#follow(w, e.deltaX, e.deltaY, dt);
+  }
+
+  // The exponent is the inverse of how Chrome encodes a pinch: deltaY = -100 ln(scale).
+  #ctrlWheel(e) {
+    let gate = this.pinchGate;
+    if (!gate || e.t - gate.last > PINCH_GAP_MS) gate = this.pinchGate = { net: 0, samples: 0, open: false };
+    gate.last = e.t;
+    gate.samples++;
+    if (gate.open) return this.out.zoom(Math.exp(-e.deltaY / 100), e.x, e.y);
+    gate.net += e.deltaY;
+    if (Math.abs(gate.net) < PINCH_DEAD_ZONE) return;
+    gate.open = true;
+    this.out.zoom(Math.exp(-gate.net / 100), e.x, e.y);
+  }
+
+  #closePinchGate(now) {
+    const gate = this.pinchGate;
+    if (!gate || now - gate.last <= PINCH_GAP_MS) return;
+    this.pinchGate = null;
+    if (!gate.open && gate.samples >= SLIDE_MIN_SAMPLES) this.out.slideIgnored?.();
   }
 
   #follow(w, dx, dy, dt) {
@@ -201,6 +230,7 @@ export class InputInterpreter {
   // pointermove the page never sees.
   tick(now) {
     if (this.wheel && now - this.wheel.last > GESTURE_TIMEOUT_MS) this.#endWheel();
+    this.#closePinchGate(now);
   }
 
   // ---- Safari gesture events ---------------------------------------------

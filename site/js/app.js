@@ -31,6 +31,8 @@ let colors = {};
 let gesture = null;            // what the finger is doing right now
 let editing = null;            // the text box in progress
 let hasShift = false;
+let spaceHeld = false;
+let slideExplained = false;
 
 const toWorld = (sx, sy) => ({ x: (sx - camera.x) / camera.z, y: (sy - camera.y) / camera.z });
 
@@ -134,7 +136,7 @@ const strokeHandlers = {
     const p = toWorld(sx, sy);
     const size = LINE_SIZES[prefs.size] / camera.z;
     const base = { id: newId(), color: prefs.color, size };
-    switch (prefs.tool) {
+    switch (spaceHeld ? 'hand' : prefs.tool) {
       case 'pencil':
         gesture = { kind: 'draw', el: { ...base, type: 'pencil', points: [[p.x, p.y]] } };
         break;
@@ -233,6 +235,12 @@ const strokeHandlers = {
     panBy(dx, dy);
   },
 
+  slideIgnored() {
+    if (slideExplained) return;
+    slideExplained = true;
+    showNotice('Chrome can’t see two fingers moving. Hold Space and drag, or use the Hand tool.');
+  },
+
   zoom(factor, x, y) {
     if (editing) commitEditor();
     hideHint();
@@ -266,6 +274,15 @@ function changed() {
   $('#clear').disabled = empty;
   syncHint();
   scheduleSave();
+}
+
+let noticeTimer = 0;
+function showNotice(text) {
+  const notice = $('#notice');
+  notice.textContent = text;
+  notice.classList.add('shown');
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => notice.classList.remove('shown'), 6000);
 }
 
 function hideHint() { hint.classList.add('gone'); }
@@ -343,7 +360,10 @@ function commitEditor() {
 editor.addEventListener('input', placeEditor);
 editor.addEventListener('keydown', (e) => {
   e.stopPropagation();
-  if (e.key === 'Escape' || (e.key === 'Enter' && e.metaKey)) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    leaveTool();
+  } else if (e.key === 'Enter' && e.metaKey) {
     e.preventDefault();
     commitEditor();
   }
@@ -438,6 +458,16 @@ function setTool(tool) {
   syncTray();
 }
 
+// Esc drops whatever is in progress and returns to the default tool. Text being
+// typed is kept, since it took keystrokes to write.
+function leaveTool() {
+  if (gesture && gesture.kind !== 'editing') {
+    gesture = null;
+    requestRender({ scene: true, live: true });
+  }
+  setTool('pencil');
+}
+
 function undo() {
   if (editing) commitEditor();
   if (history.undo()) changed();
@@ -492,6 +522,16 @@ const SHORTCUTS = { p: 'pencil', r: 'rect', c: 'ellipse', o: 'ellipse', t: 'text
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') hasShift = true;
+  if (e.key === 'Escape') {
+    leaveTool();
+    return;
+  }
+  if (e.key === ' ') {
+    e.preventDefault();          // keeps Space from pressing a focused tray button
+    spaceHeld = true;
+    document.body.dataset.cursor = 'hand';
+    return;
+  }
   if (e.metaKey || e.ctrlKey) {
     if (e.key.toLowerCase() === 'z') {
       e.preventDefault();
@@ -503,8 +543,19 @@ window.addEventListener('keydown', (e) => {
   const tool = SHORTCUTS[e.key.toLowerCase()];
   if (tool) setTool(tool);
 });
-window.addEventListener('keyup', (e) => { if (e.key === 'Shift') hasShift = false; });
-window.addEventListener('blur', () => { hasShift = false; });
+function releaseSpace() {
+  spaceHeld = false;
+  document.body.dataset.cursor = prefs.tool;
+}
+
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift') hasShift = false;
+  if (e.key === ' ') releaseSpace();
+});
+window.addEventListener('blur', () => {
+  hasShift = false;
+  releaseSpace();
+});
 
 // ---- start ---------------------------------------------------------------
 

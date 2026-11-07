@@ -9,7 +9,7 @@ const load = (name) =>
   JSON.parse(readFileSync(new URL(`./fixtures/${name}-macbook-touch.json`, import.meta.url))).log;
 
 function recorder() {
-  const log = { strokes: [], cancelled: 0, pans: [], zoom: 1, zooms: 0 };
+  const log = { strokes: [], cancelled: 0, pans: [], zoom: 1, zooms: 0, slides: 0 };
   let open = null;
   return {
     log,
@@ -20,6 +20,7 @@ function recorder() {
       strokeCancel() { log.cancelled++; open = null; },
       pan(dx, dy) { log.pans.push([dx, dy]); },
       zoom(f) { log.zoom *= f; log.zooms++; },
+      slideIgnored() { log.slides++; },
     },
   };
 }
@@ -91,7 +92,24 @@ test('Chrome: three taps make three zero-length strokes', () => {
 test('Chrome: pinch zooms and draws nothing', () => {
   const log = replay(load('chrome'), { steps: ['pinch'] });
   assert.equal(log.strokes.length, 0);
-  assert.equal(log.zooms, 288);
+  assert.ok(log.zooms > 250);
+  assert.equal(log.slides, 0);
+  // The dead zone delays the zoom but loses none of it: net deltaY was 54.4.
+  assert.ok(Math.abs(log.zoom - Math.exp(-0.544)) < 0.01, `final zoom ${log.zoom}`);
+});
+
+test('Chrome: a two-finger slide leaves the zoom still and is reported once', () => {
+  const log = replay(load('chrome'), { steps: ['two'] });
+  assert.equal(log.zooms, 0);
+  assert.equal(log.strokes.length, 0);
+  assert.equal(log.slides, 1);
+});
+
+test('Chrome: a ctrl-scroll on a real mouse wheel zooms straight away', () => {
+  const rec = recorder();
+  const input = new InputInterpreter(rec.out);
+  input.wheelEvent({ t: 0, x: 5, y: 5, deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: true, overSurface: true });
+  assert.equal(rec.log.zooms, 1);
 });
 
 test('Chrome: ordinary trackpad scrolling at the cursor pans instead of drawing', () => {

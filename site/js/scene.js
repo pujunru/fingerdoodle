@@ -41,6 +41,15 @@ export function boundsOfAll(elements) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+// Everything a selection box touches. Touching is enough, because a fingertip
+// cannot be expected to enclose a drawing exactly.
+export function intersecting(elements, box) {
+  return elements.filter((el) => {
+    const b = bounds(el);
+    return b.x <= box.x + box.w && b.x + b.w >= box.x && b.y <= box.y + box.h && b.y + b.h >= box.y;
+  });
+}
+
 function distanceToSegment(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
   const len = dx * dx + dy * dy;

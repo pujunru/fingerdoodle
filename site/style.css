@@ -74,7 +74,7 @@ html, body {
 #scene { cursor: crosshair; }
 #live { pointer-events: none; }
 body[data-cursor="hand"] #scene { cursor: grab; }
-body[data-cursor="move"] #scene { cursor: move; }
+body[data-cursor="select"] #scene { cursor: default; }
 body[data-cursor="text"] #scene { cursor: text; }
 
 #hint {
@@ -127,6 +127,47 @@ body[data-cursor="text"] #scene { cursor: text; }
   stroke-linejoin: round;
 }
 body[data-pan="true"] #pan-banner { opacity: 1; translate: -50% 0; }
+
+#bubble {
+  position: fixed;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--tray);
+  color: var(--tray-text);
+  box-shadow: var(--shadow);
+}
+#bubble[hidden] { display: none; }
+#bubble button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 13px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 17px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#bubble button:focus-visible { outline: 2px solid var(--tray-text); outline-offset: -3px; }
+@media (hover: hover) {
+  #bubble button:hover { background: var(--tray-raised); }
+}
+#bubble svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 #editor {
   position: absolute;

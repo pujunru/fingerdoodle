@@ -130,6 +130,46 @@ test('Chrome: a one-finger tap right after a flick but far away still draws', ()
   assert.equal(rec.log.strokes.length, 1);
 });
 
+function pressRecorder() {
+  const presses = [];
+  const rec = recorder();
+  const input = new InputInterpreter({ ...rec.out, longPress: (x, y) => presses.push([x, y]) });
+  const press = (extra = {}) => ({ t: 100, x: 300, y: 300, button: 0, buttons: 1, pointerType: 'mouse', pointerId: 1, overSurface: true, ...extra });
+  return { presses, input, press };
+}
+
+test('Chrome: a held finger arrives as a right press and is a long press at once', () => {
+  const { presses, input, press } = pressRecorder();
+  input.pointerDown(press({ button: 2, buttons: 2 }));
+  assert.deepEqual(presses, [[300, 300]]);
+  input.tick(5000);
+  assert.equal(presses.length, 1);
+});
+
+test('Safari: a finger held still for half a second is a long press', () => {
+  const { presses, input, press } = pressRecorder();
+  input.pointerDown(press());
+  input.tick(400);
+  assert.equal(presses.length, 0);
+  input.pointerMove(press({ x: 304, y: 303 }));   // a fingertip drifts a little
+  input.tick(700);
+  assert.deepEqual(presses, [[300, 300]]);
+});
+
+test('a press that moves or lifts early is not a long press', () => {
+  const moved = pressRecorder();
+  moved.input.pointerDown(moved.press());
+  moved.input.pointerMove(moved.press({ x: 340 }));
+  moved.input.tick(2000);
+  assert.equal(moved.presses.length, 0);
+
+  const lifted = pressRecorder();
+  lifted.input.pointerDown(lifted.press());
+  lifted.input.pointerUp(lifted.press({ t: 200, buttons: 0 }));
+  lifted.input.tick(2000);
+  assert.equal(lifted.presses.length, 0);
+});
+
 test('Chrome: a ctrl-scroll on a real mouse wheel zooms straight away', () => {
   const rec = recorder();
   const input = new InputInterpreter(rec.out);

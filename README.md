@@ -14,8 +14,10 @@ Open the page in Chrome or Safari. It starts in pan mode, so your finger moves t
 | Rectangle, Circle | Drag from corner to corner |
 | Text | Tap a spot and type on the keyboard, then tap away to finish |
 | Eraser | Drag across anything to remove it |
-| Move | Drag a drawing to a new spot |
+| Select | Tap something to select it, or drag across empty space to select several. Drag a selection to move it. A bubble offers Duplicate and Delete |
 | Hand | Drag to pan the canvas. This is the starting mode |
+
+In pan mode or with the Select tool, press and hold anything to select it and open the same bubble. While a drawing tool is active, press and hold does not open the bubble, because it can start a slow line.
 
 Two-finger gestures depend on the browser, because each one receives them differently:
 

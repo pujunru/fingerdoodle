@@ -1,7 +1,7 @@
 // Turns raw browser events into a small vocabulary a drawing app can use:
 //
 //   strokeStart(x, y) / strokeMove(x, y) / strokeEnd() / strokeCancel()
-//   pan(dx, dy) / zoom(factor, x, y)
+//   longPress(x, y) / pan(dx, dy) / zoom(factor, x, y)
 //
 // The touchscreen MacBook Pro needs this layer because macOS does not give web
 // pages touch events. Measured on macOS 27.2 (recordings in test/fixtures),
@@ -37,6 +37,8 @@
 
 const NEAR_PX = 2.5;              // two coordinates this close are the same place
 const JUMP_PX = 80;               // a hover move this long in one event is a teleport
+const HOLD_MS = 500;              // a press this long without moving is a long press
+const HOLD_SLOP_PX = 8;           // a fingertip drifts this far while holding still
 const GAP_MS = 22;                // a longer wheel gap may be the finger lifting
 const COAST_MIN_MS = 14.5;        // inertia cadence, lower bound
 const COAST_MAX_MS = 19;          // inertia cadence, upper bound
@@ -87,8 +89,23 @@ export class InputInterpreter {
     }
     if (e.button === 1) { this.pan2 = { x: e.x, y: e.y }; return; }
     if (e.button !== 0 && e.button !== 2) return;
-    this.stroke = { id: e.pointerId };
+    this.#beginStroke(e);
+    // macOS turns a finger held still into a right button press in Chrome, so the
+    // press itself is the signal. It also gives a real mouse a right click.
+    if (e.button === 2) {
+      this.stroke.holdDone = true;
+      this.out.longPress?.(e.x, e.y);
+    }
+  }
+
+  #beginStroke(e) {
+    this.stroke = { id: e.pointerId, x: e.x, y: e.y, t: e.t, holdDone: false };
     this.out.strokeStart(e.x, e.y);
+  }
+
+  #noteDrift(e) {
+    const s = this.stroke;
+    if (Math.hypot(e.x - s.x, e.y - s.y) > HOLD_SLOP_PX) s.holdDone = true;
   }
 
   pointerMove(e) {
@@ -98,6 +115,7 @@ export class InputInterpreter {
       this.out.pan(e.x - this.pan2.x, e.y - this.pan2.y);
       this.pan2 = { x: e.x, y: e.y };
     } else if (this.stroke) {
+      this.#noteDrift(e);
       this.out.strokeMove(e.x, e.y);
     }
   }
@@ -249,6 +267,11 @@ export class InputInterpreter {
   // pointermove the page never sees.
   tick(now) {
     if (this.wheel && now - this.wheel.last > GESTURE_TIMEOUT_MS) this.#endWheel();
+    const s = this.stroke;
+    if (s && !s.holdDone && now - s.t >= HOLD_MS) {   // Safari sends no right click
+      s.holdDone = true;
+      this.out.longPress?.(s.x, s.y);
+    }
   }
 
   // ---- Safari gesture events ---------------------------------------------
@@ -281,8 +304,7 @@ export class InputInterpreter {
     if (!e.overSurface) return;
     this.touches.set(e.pointerId, { x: e.x, y: e.y });
     if (this.touches.size === 1) {
-      this.stroke = { id: e.pointerId };
-      this.out.strokeStart(e.x, e.y);
+      this.#beginStroke(e);
     } else if (this.touches.size === 2) {
       if (this.stroke) {
         this.stroke = null;
@@ -296,6 +318,7 @@ export class InputInterpreter {
     if (!this.touches.has(e.pointerId)) return;
     this.touches.set(e.pointerId, { x: e.x, y: e.y });
     if (this.stroke && this.stroke.id === e.pointerId) {
+      this.#noteDrift(e);
       this.out.strokeMove(e.x, e.y);
     } else if (this.pinch && this.touches.size >= 2) {
       const next = this.#pinchState();
@@ -348,6 +371,6 @@ export function attachInput(surface, handlers) {
   on('dragstart', (e) => e.preventDefault());
   surface.addEventListener('selectstart', (e) => e.preventDefault());
 
-  setInterval(() => interpreter.tick(performance.now()), 150);
+  setInterval(() => interpreter.tick(performance.now()), 100);
   return interpreter;
 }

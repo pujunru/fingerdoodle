@@ -1,17 +1,18 @@
 import { attachInput } from './input.js';
-import { History, bounds, boundsOfAll, hit, newId, sanitize, topmostAt, translated } from './scene.js';
+import { History, bounds, boundsOfAll, hit, intersecting, newId, sanitize, topmostAt, translated } from './scene.js';
 import { LINE_HEIGHT, drawElement, drawPaper, fontFor } from './render.js';
 
 const STORAGE_KEY = 'fingerdoodle.v1';
 const LINE_SIZES = [3, 6, 12];
 const TEXT_SIZES = [24, 36, 56];
 const COLORS = ['ink', 'red', 'blue', 'green', 'yellow'];
-const TOOLS = ['pencil', 'rect', 'ellipse', 'text', 'eraser', 'move', 'hand'];
+const TOOLS = ['pencil', 'rect', 'ellipse', 'text', 'eraser', 'select', 'hand'];
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 10;
 const FINGER_TOLERANCE = 14;   // screen px around a fingertip when picking things
 const MIN_SHAPE = 4;           // screen px; anything smaller was a stray tap
 const TRAY_CLEARANCE = 96;
+const TOP_CLEARANCE = 72;      // keeps the bubble clear of the pan mode banner
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -30,6 +31,7 @@ let history = new History();
 let view = { width: innerWidth, height: innerHeight, dpr: 1 };
 let colors = {};
 let gesture = null;            // what the finger is doing right now
+let selection = new Set();     // ids of the selected elements
 let editing = null;            // the text box in progress
 let hasShift = false;
 let spaceHeld = false;         // holding Space borrows pan without leaving the tool
@@ -78,9 +80,73 @@ function renderLive() {
   const { width, height, dpr } = view;
   liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   liveCtx.clearRect(0, 0, width, height);
-  if (!gesture?.el) return;
   applyCamera(liveCtx);
-  drawElement(liveCtx, gesture.el, colors);
+  if (gesture?.el) drawElement(liveCtx, gesture.el, colors);
+  for (const el of gesture?.els ?? []) drawElement(liveCtx, el, colors);
+  drawSelection();
+}
+
+// Line widths and dashes are divided by the zoom so they stay the same on screen.
+function drawSelection() {
+  const pad = 6 / camera.z;
+  liveCtx.strokeStyle = colors.blue;
+  liveCtx.fillStyle = colors.blue;
+  liveCtx.lineWidth = 2 / camera.z;
+  liveCtx.setLineDash([7 / camera.z, 5 / camera.z]);
+  for (const el of gesture?.els ?? selectedElements()) {
+    const b = bounds(el);
+    liveCtx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
+  }
+  if (gesture?.box) {
+    const { x, y, w, h } = gesture.box;
+    liveCtx.strokeRect(x, y, w, h);
+    liveCtx.globalAlpha = 0.12;
+    liveCtx.fillRect(x, y, w, h);
+    liveCtx.globalAlpha = 1;
+  }
+  liveCtx.setLineDash([]);
+}
+
+function selectedElements() {
+  return history.elements.filter((el) => selection.has(el.id));
+}
+
+function isOnSelection(p) {
+  const box = boundsOfAll(selectedElements());
+  const tolerance = FINGER_TOLERANCE / camera.z;
+  return !!box && p.x >= box.x - tolerance && p.x <= box.x + box.w + tolerance
+    && p.y >= box.y - tolerance && p.y <= box.y + box.h + tolerance;
+}
+
+// ---- the bubble of quick actions -----------------------------------------
+
+function openBubble() {
+  const box = boundsOfAll(selectedElements());
+  if (!box) return closeBubble();
+  const bubble = $('#bubble');
+  bubble.hidden = false;
+  const { width, height } = bubble.getBoundingClientRect();
+  const gap = 14;
+  const margin = 8;
+  const centre = (box.x + box.w / 2) * camera.z + camera.x;
+  const top = box.y * camera.z + camera.y - gap - height;
+  const below = (box.y + box.h) * camera.z + camera.y + gap;
+  bubble.style.left = `${Math.min(view.width - width - margin, Math.max(margin, centre - width / 2))}px`;
+  bubble.style.top = `${top >= TOP_CLEARANCE ? top : Math.min(below, view.height - TRAY_CLEARANCE - height)}px`;
+}
+
+function closeBubble() {
+  $('#bubble').hidden = true;
+}
+
+function duplicateSelection() {
+  const offset = 24 / camera.z;
+  const copies = selectedElements().map((el) => ({ ...translated(el, offset, offset), id: newId() }));
+  history.commit([...history.elements, ...copies]);
+  selection = new Set(prefs.tool === 'select' ? copies.map((el) => el.id) : []);
+  changed();
+  if (selection.size) openBubble();
+  else closeBubble();
 }
 
 function readColors() {
@@ -133,6 +199,12 @@ const strokeHandlers = {
       gesture = { kind: 'ignored' };
       return;
     }
+    closeBubble();
+    if (prefs.tool === 'hand' && selection.size) {   // pan mode has no lasting selection
+      selection = new Set();
+      requestRender({ live: true });
+      changedSelection();
+    }
     const p = toWorld(sx, sy);
     const size = LINE_SIZES[prefs.size] / camera.z;
     const base = { id: newId(), color: prefs.color, size };
@@ -148,11 +220,15 @@ const strokeHandlers = {
         gesture = { kind: 'erase', hidden: new Set() };
         eraseAt(p);
         break;
-      case 'move': {
-        const el = topmostAt(history.elements, p.x, p.y, FINGER_TOLERANCE / camera.z, true);
-        gesture = el
-          ? { kind: 'move', source: el, el, from: p, hidden: new Set([el.id]) }
-          : { kind: 'ignored' };
+      case 'select': {
+        if (!isOnSelection(p)) {
+          const el = topmostAt(history.elements, p.x, p.y, FINGER_TOLERANCE / camera.z, true);
+          selection = new Set(el ? [el.id] : []);
+        }
+        const sources = selectedElements();
+        gesture = sources.length
+          ? { kind: 'move', sources, els: sources, from: p, hidden: new Set(selection) }
+          : { kind: 'marquee', origin: p, box: { x: p.x, y: p.y, w: 0, h: 0 } };
         requestRender({ scene: true });
         break;
       }
@@ -180,7 +256,11 @@ const strokeHandlers = {
         eraseAt(p);
         return;
       case 'move':
-        gesture.el = translated(gesture.source, p.x - gesture.from.x, p.y - gesture.from.y);
+        gesture.moved = true;
+        gesture.els = gesture.sources.map((el) => translated(el, p.x - gesture.from.x, p.y - gesture.from.y));
+        break;
+      case 'marquee':
+        gesture.box = normalizedBox(gesture.origin, p);
         break;
       case 'pan':
         panBy(sx - gesture.x, sy - gesture.y);
@@ -214,13 +294,37 @@ const strokeHandlers = {
         if (g.hidden.size) history.commit(elements.filter((el) => !g.hidden.has(el.id)));
         break;
       case 'move':
-        if (g.el !== g.source) history.commit(elements.map((el) => (el === g.source ? g.el : el)));
+        if (g.moved) {
+          const moved = new Map(g.els.map((el) => [el.id, el]));
+          history.commit(elements.map((el) => moved.get(el.id) ?? el));
+        }
+        break;
+      case 'marquee':
+        selection = new Set(intersecting(elements, g.box).map((el) => el.id));
+        break;
+      case 'ignored':
         break;
       case 'text':
         if (!g.moved) openEditorAt(g.start);
         break;
     }
     changed();
+    if (prefs.tool === 'select' && selection.size) openBubble();
+  },
+
+  // Only pan and select answer a long press. While drawing, press and hold is how
+  // a slow line starts in Chrome.
+  longPress(sx, sy) {
+    if (spaceHeld || !['hand', 'select'].includes(prefs.tool)) return;
+    const p = toWorld(sx, sy);
+    if (!isOnSelection(p)) {
+      const el = topmostAt(history.elements, p.x, p.y, FINGER_TOLERANCE / camera.z, true);
+      if (!el) return;
+      selection = new Set([el.id]);
+    }
+    gesture = { kind: 'ignored' };
+    changed();
+    openBubble();
   },
 
   strokeCancel() {
@@ -254,20 +358,30 @@ function panBy(dx, dy) {
 }
 
 function cameraMoved() {
+  closeBubble();
   requestRender({ scene: true, live: true });
   $('#zoom').textContent = `${Math.round(camera.z * 100)}%`;
   scheduleSave();
 }
 
 function changed() {
+  selection = new Set(selectedElements().map((el) => el.id));   // undo may have removed some
   requestRender({ scene: true, live: true });
   $('#undo').disabled = !history.past.length;
   $('#redo').disabled = !history.future.length;
   const empty = !history.elements.length;
   $('#save').disabled = empty;
   $('#clear').disabled = empty;
+  changedSelection();
   syncHint();
   scheduleSave();
+}
+
+function changedSelection() {
+  const label = selection.size ? 'Delete the selection' : 'Clear the canvas';
+  $('#clear').setAttribute('aria-label', label);
+  $('#clear').title = selection.size ? `${label} (Delete)` : `${label} (undo brings it back)`;
+  if (!selection.size) closeBubble();
 }
 
 function hideHint() { hint.classList.add('gone'); }
@@ -444,6 +558,8 @@ function syncTray() {
 function setTool(tool) {
   if (editing) commitEditor();
   prefs.tool = tool;
+  selection = new Set();
+  changed();
   syncTray();
 }
 
@@ -467,9 +583,18 @@ function redo() {
   if (history.redo()) changed();
 }
 
+function deleteSelection() {
+  history.commit(history.elements.filter((el) => !selection.has(el.id)));
+  changed();
+}
+
+// The trash button removes the selection when there is one, so that deleting
+// never needs the keyboard.
 function clearAll() {
   if (editing) commitEditor();
-  if (history.elements.length) {
+  if (selection.size) {
+    deleteSelection();
+  } else if (history.elements.length) {
     history.commit([]);
     changed();
   }
@@ -501,18 +626,29 @@ $('#tray').addEventListener('click', (e) => {
     syncTray();
   }
 });
+$('#bubble').addEventListener('click', (e) => {
+  const button = e.target.closest('button');
+  if (button) pressFeedback(button);
+});
+$('#bubble-delete').addEventListener('click', deleteSelection);
+$('#bubble-duplicate').addEventListener('click', duplicateSelection);
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
 $('#clear').addEventListener('click', clearAll);
 $('#save').addEventListener('click', savePng);
 $('#zoom').addEventListener('click', fitToScreen);
 
-const SHORTCUTS = { p: 'pencil', r: 'rect', c: 'ellipse', o: 'ellipse', t: 'text', e: 'eraser', v: 'move', h: 'hand' };
+const SHORTCUTS = { p: 'pencil', r: 'rect', c: 'ellipse', o: 'ellipse', t: 'text', e: 'eraser', v: 'select', h: 'hand' };
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') hasShift = true;
   if (e.key === 'Escape') {
     leaveTool();
+    return;
+  }
+  if ((e.key === 'Backspace' || e.key === 'Delete') && selection.size) {
+    e.preventDefault();
+    deleteSelection();
     return;
   }
   if (e.key === ' ') {

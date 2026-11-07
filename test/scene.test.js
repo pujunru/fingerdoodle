@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { History, boundsOfAll, hit, sanitize, topmostAt, translated } from '../site/js/scene.js';
+import { History, boundsOfAll, hit, intersecting, sanitize, topmostAt, translated } from '../site/js/scene.js';
 
 const stroke = { id: 'a', type: 'pencil', points: [[0, 0], [100, 0]], color: 'ink', size: 4 };
 const box = { id: 'b', type: 'rect', x: 0, y: 0, w: 100, h: 50, color: 'ink', size: 4 };
@@ -34,6 +34,13 @@ test('boundsOfAll spans every element and is null for an empty page', () => {
   assert.equal(boundsOfAll([]), null);
   const b = boundsOfAll([box, translated(box, 100, 0)]);
   assert.equal(b.w, 204);
+});
+
+test('a selection box picks up everything it touches and nothing else', () => {
+  const far = translated(box, 500, 500);
+  const picked = intersecting([box, far], { x: 90, y: 40, w: 20, h: 20 });
+  assert.deepEqual(picked.map((el) => el.id), ['b']);
+  assert.equal(intersecting([box, far], { x: 200, y: 200, w: 50, h: 50 }).length, 0);
 });
 
 test('history undoes and redoes, and a new edit clears redo', () => {

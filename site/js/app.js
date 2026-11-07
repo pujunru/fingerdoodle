@@ -23,7 +23,8 @@ const liveCtx = liveCanvas.getContext('2d');
 const editor = $('#editor');
 const hint = $('#hint');
 
-const prefs = { tool: 'pencil', color: 'ink', size: 1 };
+// Pan is home. Fingers roam the canvas freely, and ink needs a deliberate choice.
+const prefs = { tool: 'hand', color: 'ink', size: 1 };
 const camera = { x: 0, y: 0, z: 1 };
 let history = new History();
 let view = { width: innerWidth, height: innerHeight, dpr: 1 };
@@ -31,8 +32,7 @@ let colors = {};
 let gesture = null;            // what the finger is doing right now
 let editing = null;            // the text box in progress
 let hasShift = false;
-let spaceHeld = false;
-let slideExplained = false;
+let spaceHeld = false;         // holding Space borrows pan without leaving the tool
 
 const toWorld = (sx, sy) => ({ x: (sx - camera.x) / camera.z, y: (sy - camera.y) / camera.z });
 
@@ -235,12 +235,6 @@ const strokeHandlers = {
     panBy(dx, dy);
   },
 
-  slideIgnored() {
-    if (slideExplained) return;
-    slideExplained = true;
-    showNotice('Chrome can’t see two fingers moving. Hold Space and drag, or use the Hand tool.');
-  },
-
   zoom(factor, x, y) {
     if (editing) commitEditor();
     hideHint();
@@ -274,15 +268,6 @@ function changed() {
   $('#clear').disabled = empty;
   syncHint();
   scheduleSave();
-}
-
-let noticeTimer = 0;
-function showNotice(text) {
-  const notice = $('#notice');
-  notice.textContent = text;
-  notice.classList.add('shown');
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => notice.classList.remove('shown'), 6000);
 }
 
 function hideHint() { hint.classList.add('gone'); }
@@ -432,7 +417,6 @@ function restore() {
     history = new History(sanitize(saved.elements));
     const { x, y, z } = saved.camera ?? {};
     if ([x, y, z].every(Number.isFinite) && z > 0) Object.assign(camera, { x, y, z });
-    if (TOOLS.includes(saved.prefs?.tool)) prefs.tool = saved.prefs.tool;
     if (COLORS.includes(saved.prefs?.color)) prefs.color = saved.prefs.color;
     if (LINE_SIZES[saved.prefs?.size]) prefs.size = saved.prefs.size;
   } catch {
@@ -443,11 +427,16 @@ function restore() {
 // ---- the tray ------------------------------------------------------------
 
 function syncTray() {
-  document.body.dataset.cursor = prefs.tool;
-  for (const b of $$('[data-tool]')) b.setAttribute('aria-pressed', String(b.dataset.tool === prefs.tool));
+  const tool = spaceHeld ? 'hand' : prefs.tool;
+  document.body.dataset.cursor = tool;
+  document.body.dataset.pan = String(tool === 'hand');
+  $('#pan-text').textContent = spaceHeld && prefs.tool !== 'hand'
+    ? 'Let go of Space to keep drawing'
+    : 'Tap a tool to draw';
+  for (const b of $$('[data-tool]')) b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
   for (const b of $$('[data-color]')) b.setAttribute('aria-pressed', String(b.dataset.color === prefs.color));
   for (const b of $$('[data-size]')) b.setAttribute('aria-pressed', String(Number(b.dataset.size) === prefs.size));
-  const active = $(`[data-tool="${prefs.tool}"]`);
+  const active = $(`[data-tool="${tool}"]`);
   $('#indicator').style.transform = `translateX(${active.offsetLeft}px)`;
   scheduleSave();
 }
@@ -458,14 +447,14 @@ function setTool(tool) {
   syncTray();
 }
 
-// Esc drops whatever is in progress and returns to the default tool. Text being
-// typed is kept, since it took keystrokes to write.
+// Esc drops whatever is in progress and returns to pan. Text being typed is kept,
+// since it took keystrokes to write.
 function leaveTool() {
   if (gesture && gesture.kind !== 'editing') {
     gesture = null;
     requestRender({ scene: true, live: true });
   }
-  setTool('pencil');
+  setTool('hand');
 }
 
 function undo() {
@@ -528,8 +517,10 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.key === ' ') {
     e.preventDefault();          // keeps Space from pressing a focused tray button
-    spaceHeld = true;
-    document.body.dataset.cursor = 'hand';
+    if (!spaceHeld) {
+      spaceHeld = true;
+      syncTray();
+    }
     return;
   }
   if (e.metaKey || e.ctrlKey) {
@@ -544,13 +535,17 @@ window.addEventListener('keydown', (e) => {
   if (tool) setTool(tool);
 });
 function releaseSpace() {
+  if (!spaceHeld) return;
   spaceHeld = false;
-  document.body.dataset.cursor = prefs.tool;
+  syncTray();
 }
 
 window.addEventListener('keyup', (e) => {
   if (e.key === 'Shift') hasShift = false;
-  if (e.key === ' ') releaseSpace();
+  if (e.key === ' ' && spaceHeld) {
+    e.preventDefault();
+    releaseSpace();
+  }
 });
 window.addEventListener('blur', () => {
   hasShift = false;

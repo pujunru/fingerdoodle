@@ -6,10 +6,10 @@ import { readFileSync } from 'node:fs';
 import { InputInterpreter } from '../site/js/input.js';
 
 const load = (name) =>
-  JSON.parse(readFileSync(new URL(`./fixtures/${name}-macbook-touch.json`, import.meta.url))).log;
+  JSON.parse(readFileSync(new URL(`./fixtures/${name === 'two-finger' ? 'chrome-two-finger' : `${name}-macbook-touch`}.json`, import.meta.url))).log;
 
 function recorder() {
-  const log = { strokes: [], cancelled: 0, pans: [], zoom: 1, zooms: 0, slides: 0 };
+  const log = { strokes: [], cancelled: 0, pans: [], zoom: 1, zooms: 0 };
   let open = null;
   return {
     log,
@@ -20,7 +20,6 @@ function recorder() {
       strokeCancel() { log.cancelled++; open = null; },
       pan(dx, dy) { log.pans.push([dx, dy]); },
       zoom(f) { log.zoom *= f; log.zooms++; },
-      slideIgnored() { log.slides++; },
     },
   };
 }
@@ -93,16 +92,42 @@ test('Chrome: pinch zooms and draws nothing', () => {
   const log = replay(load('chrome'), { steps: ['pinch'] });
   assert.equal(log.strokes.length, 0);
   assert.ok(log.zooms > 250);
-  assert.equal(log.slides, 0);
   // The dead zone delays the zoom but loses none of it: net deltaY was 54.4.
   assert.ok(Math.abs(log.zoom - Math.exp(-0.544)) < 0.01, `final zoom ${log.zoom}`);
 });
 
-test('Chrome: a two-finger slide leaves the zoom still and is reported once', () => {
+test('Chrome: a short two-finger slide leaves the zoom still', () => {
   const log = replay(load('chrome'), { steps: ['two'] });
   assert.equal(log.zooms, 0);
   assert.equal(log.strokes.length, 0);
-  assert.equal(log.slides, 1);
+});
+
+const twoFinger = () => load('two-finger');
+
+test('Chrome: slow two-finger slides in any direction never touch the zoom', () => {
+  for (const step of ['two-slow-grey', 'two-sideways-grey', 'two-slow-list']) {
+    const log = replay(twoFinger(), { steps: [step] });
+    assert.equal(log.zooms, 0, step);
+    assert.equal(log.strokes.length, 0, step);
+  }
+});
+
+test('Chrome: quick two-finger flicks leave no ink', () => {
+  const log = replay(twoFinger(), { steps: ['two-quick-grey'] });
+  assert.equal(log.strokes.length, 0);
+  assert.equal(log.cancelled, 3);
+});
+
+test('Chrome: a one-finger tap right after a flick but far away still draws', () => {
+  const rec = recorder();
+  const input = new InputInterpreter(rec.out);
+  input.pointerMove({ t: 0, x: 900, y: 900, buttons: 0, pointerType: 'mouse' });
+  input.wheelEvent({ t: 10, x: 100, y: 100, deltaX: 1, deltaY: 1, deltaMode: 0, ctrlKey: false, overSurface: true });
+  input.pointerMove({ t: 20, x: 900, y: 900, buttons: 0, pointerType: 'mouse' });
+  const tap = { t: 60, x: 600, y: 600, button: 0, buttons: 1, pointerType: 'mouse', pointerId: 1, overSurface: true };
+  input.pointerDown(tap);
+  input.pointerUp(tap);
+  assert.equal(rec.log.strokes.length, 1);
 });
 
 test('Chrome: a ctrl-scroll on a real mouse wheel zooms straight away', () => {

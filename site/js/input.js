@@ -15,10 +15,13 @@
 //   two-finger slide   ctrl+wheel noise, no position pointercancel, then a
 //                                                    left drag at the centroid
 //
-// Chrome's two-finger slide cannot be recovered: the page gets a fixed position,
-// no horizontal delta and no pointer events, so the direction never arrives. The
-// noise looks like a very small pinch, and a dead zone keeps it from wobbling the
-// zoom. A slide that dies in the dead zone is reported as slideIgnored.
+// Chrome's two-finger slide cannot be recovered: in any direction the page gets a
+// fixed position, no horizontal delta and no pointer or scroll events, so the
+// direction never arrives. The slide shows up as weak ctrl+wheel noise, which a
+// gate holds back from the zoom. A quick two-finger flick is different: one tiny
+// wheel event, then a click about 50 px away, which is the second finger. Neither
+// may leave ink. A pinch and a two-finger touch also send the same signal, so
+// modes are switched by hand instead of being guessed from a gesture.
 //
 // Chrome's quick drag is the hard case: no pointerdown ever fires, which is why
 // ordinary drawing sites ignore the finger. Three facts make it recoverable:
@@ -43,9 +46,14 @@ const SPEED_WINDOW = 5;           // recent samples used to estimate finger spee
 const GESTURE_TIMEOUT_MS = 600;   // end if the cursor-restore signal never arrives
 const SECOND_FINGER_MS = 250;     // Safari: pointercancel, then pointerdown = two fingers
 const WHEEL_LINE_PX = 16;
-const PINCH_DEAD_ZONE = 20;       // wheel units of net pinch; slides stayed under 17
+const PINCH_WINDOW_MS = 150;      // recent ctrl+wheel samples weighed together
+const PINCH_NET = 45;             // net change in that window; slides peaked at 35
+const PINCH_PEAK = 6;             // one sample this strong; slides peaked at 4.8
 const PINCH_GAP_MS = 120;         // a longer silence ends a pinch
-const SLIDE_MIN_SAMPLES = 15;     // fewer than this is a stray touch, not a slide
+const FLICK_MAX_SAMPLES = 2;      // a wheel gesture this short may be a two-finger flick
+const FLICK_MAX_PX = 12;          // and it travelled no further than this
+const FLICK_CLICK_MS = 200;       // the second finger's click follows within this
+const FLICK_CLICK_PX = 120;       // and lands within this of the first finger
 
 const near = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by) <= NEAR_PX;
 
@@ -62,7 +70,8 @@ export class InputInterpreter {
     this.wheel = null;           // the finger-as-wheel gesture in progress
     this.touches = new Map();    // real touch or pen pointers, on hardware that has them
     this.pinch = null;
-    this.pinchGate = null;       // Chrome pinch waiting to clear the dead zone
+    this.pinchGate = null;       // Chrome ctrl+wheel not yet proven to be a pinch
+    this.flick = null;           // { x, y, until } after a possible two-finger flick
   }
 
   // ---- pointers ----------------------------------------------------------
@@ -70,13 +79,14 @@ export class InputInterpreter {
   pointerDown(e) {
     if (e.pointerType === 'touch' || e.pointerType === 'pen') return this.#touchDown(e);
     if (!e.overSurface) return;
+    this.#endWheel();
+    if (this.#isFlickClick(e)) return;
     if (this.gestureActive || e.t < this.secondFingerUntil) {
       this.pan2 = { x: e.x, y: e.y };
       return;
     }
     if (e.button === 1) { this.pan2 = { x: e.x, y: e.y }; return; }
     if (e.button !== 0 && e.button !== 2) return;
-    this.#endWheel();
     this.stroke = { id: e.pointerId };
     this.out.strokeStart(e.x, e.y);
   }
@@ -149,12 +159,14 @@ export class InputInterpreter {
       if (atCursor) return this.out.pan(-e.deltaX, -e.deltaY);
       w = this.wheel = {
         originX: e.x, originY: e.y, x: e.x, y: e.y,
-        mode: 'track', last: e.t, buffer: [], recent: [],
+        mode: 'track', last: e.t, buffer: [], recent: [], samples: 0, travel: 0,
       };
       this.out.strokeStart(e.x, e.y);
     }
     const dt = e.t - w.last;
     w.last = e.t;
+    w.samples++;
+    w.travel += Math.hypot(e.deltaX, e.deltaY);
     if (w.mode === 'coast') return;
     if (w.mode === 'suspect') {
       w.buffer.push({ dx: e.deltaX, dy: e.deltaY, dt });
@@ -172,21 +184,15 @@ export class InputInterpreter {
   // The exponent is the inverse of how Chrome encodes a pinch: deltaY = -100 ln(scale).
   #ctrlWheel(e) {
     let gate = this.pinchGate;
-    if (!gate || e.t - gate.last > PINCH_GAP_MS) gate = this.pinchGate = { net: 0, samples: 0, open: false };
+    if (!gate || e.t - gate.last > PINCH_GAP_MS) gate = this.pinchGate = { recent: [], open: false };
     gate.last = e.t;
-    gate.samples++;
     if (gate.open) return this.out.zoom(Math.exp(-e.deltaY / 100), e.x, e.y);
-    gate.net += e.deltaY;
-    if (Math.abs(gate.net) < PINCH_DEAD_ZONE) return;
+    gate.recent.push({ t: e.t, dy: e.deltaY });
+    while (e.t - gate.recent[0].t > PINCH_WINDOW_MS) gate.recent.shift();
+    const net = gate.recent.reduce((sum, s) => sum + s.dy, 0);
+    if (Math.abs(net) < PINCH_NET && Math.abs(e.deltaY) < PINCH_PEAK) return;
     gate.open = true;
-    this.out.zoom(Math.exp(-gate.net / 100), e.x, e.y);
-  }
-
-  #closePinchGate(now) {
-    const gate = this.pinchGate;
-    if (!gate || now - gate.last <= PINCH_GAP_MS) return;
-    this.pinchGate = null;
-    if (!gate.open && gate.samples >= SLIDE_MIN_SAMPLES) this.out.slideIgnored?.();
+    this.out.zoom(Math.exp(-net / 100), e.x, e.y);
   }
 
   #follow(w, dx, dy, dt) {
@@ -223,14 +229,26 @@ export class InputInterpreter {
     if (!w) return;
     this.wheel = null;
     this.jumped = false;
+    if (w.samples <= FLICK_MAX_SAMPLES && w.travel <= FLICK_MAX_PX) {
+      this.flick = { x: w.originX, y: w.originY, until: w.last + FLICK_CLICK_MS };
+      this.out.strokeCancel();
+      return;
+    }
     if (w.mode !== 'coast') this.out.strokeEnd();  // a held-back buffer is dropped as inertia
+  }
+
+  #isFlickClick(e) {
+    const f = this.flick;
+    this.flick = null;
+    if (!f || e.button !== 0 || e.t > f.until) return false;
+    if (Math.hypot(e.x - f.x, e.y - f.y) > FLICK_CLICK_PX) return false;
+    return true;
   }
 
   // Call regularly. Covers a cursor sitting outside the window, whose restore
   // pointermove the page never sees.
   tick(now) {
     if (this.wheel && now - this.wheel.last > GESTURE_TIMEOUT_MS) this.#endWheel();
-    this.#closePinchGate(now);
   }
 
   // ---- Safari gesture events ---------------------------------------------

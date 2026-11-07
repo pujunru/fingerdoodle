@@ -6,7 +6,7 @@ A touchscreen should make sketching on a web page effortless, and most drawing s
 
 ## Drawing
 
-Open the page in Chrome or Safari and start drawing. The tray along the bottom holds every tool, and each one is a large tap target.
+Open the page in Chrome or Safari. It starts in pan mode, so your finger moves the canvas and cannot leave a stray mark. Tap a tool in the tray along the bottom to draw, and press Esc to leave it and go back to panning. To pan for a moment while drawing, hold Space and drag; letting go returns you to your tool.
 
 | Tool | What your finger does |
 | --- | --- |
@@ -15,16 +15,18 @@ Open the page in Chrome or Safari and start drawing. The tray along the bottom h
 | Text | Tap a spot and type on the keyboard, then tap away to finish |
 | Eraser | Drag across anything to remove it |
 | Move | Drag a drawing to a new spot |
-| Hand | Drag to pan the canvas |
+| Hand | Drag to pan the canvas. This is the starting mode |
 
 Two-finger gestures depend on the browser, because each one receives them differently:
 
 | Gesture | Chrome | Safari |
 | --- | --- | --- |
 | Pinch to zoom | Yes | Yes |
-| Two fingers to pan | No, hold Space and drag or use the Hand tool | Yes |
+| Two fingers to pan | No, use pan mode | Yes |
 
-Your drawing saves itself in the browser. The percentage button fits the drawing to the screen, and the download button saves it as a PNG. Mouse and trackpad work too, each tool has a keyboard shortcut shown in its tooltip, and Esc returns to the Pencil.
+A banner at the top of the screen shows whenever you are in pan mode.
+
+Your drawing saves itself in the browser. The percentage button fits the drawing to the screen, and the download button saves it as a PNG. Mouse and trackpad work too, and each tool has a keyboard shortcut shown in its tooltip.
 
 ## How touch reaches a web page on a Mac
 
@@ -37,8 +39,9 @@ Each browser receives a finger as something else, and `site/js/input.js` turns a
 | Slow or held drag | Right-button drag | Left-button drag |
 | Pinch | `ctrlKey` wheel events | `gesturechange` events |
 | Two-finger slide | `ctrlKey` wheel noise, no position | `pointercancel`, then a drag at the centroid |
+| Quick two-finger flick | One tiny wheel event, then a click | Not separately measured |
 
-Chrome's two-finger slide cannot be recovered, because the page receives a fixed position and no direction. The other hard case is Chrome's quick drag, and three measured facts recover it. The reported cursor jumps to the finger just before the first wheel event, which separates a finger from a trackpad. The deltas follow the finger 1:1, so the path can be rebuilt by adding them up. Finger samples arrive at 120 Hz, while inertia starts after a gap of about 33 ms and runs at exactly 60 Hz, so it can be dropped instead of drawn as phantom ink.
+Chrome's two-finger slide cannot be recovered: in every direction tested, the page receives a fixed position, no horizontal movement and no scroll or pointer events. It arrives as weak pinch noise, and a quick two-finger flick arrives as one tiny wheel event plus a click from the second finger, so `input.js` keeps both from zooming or leaving ink. The other hard case is Chrome's quick drag, and three measured facts recover it. The reported cursor jumps to the finger just before the first wheel event, which separates a finger from a trackpad. The deltas follow the finger 1:1, so the path can be rebuilt by adding them up. Finger samples arrive at 120 Hz, while inertia starts after a gap of about 33 ms and runs at exactly 60 Hz, so it can be dropped instead of drawn as phantom ink.
 
 These behaviours were measured on macOS 27.2 with Chrome 156 and Safari 27.2, and a later update could change them. To see what your own machine sends, open `probe.html`.
 

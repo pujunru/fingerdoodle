@@ -1,0 +1,10 @@
+{
+  "name": "fingerdoodle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A doodling site built for fingers on a touchscreen MacBook.",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

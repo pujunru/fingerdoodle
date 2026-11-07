@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touch Input Probe</title>
+<style>
+  :root { color-scheme: light dark; font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body { display: grid; grid-template-rows: auto 1fr; background: Canvas; color: CanvasText; }
+  nav { display: flex; gap: 8px; padding: 10px; flex-wrap: wrap; align-items: center; }
+  nav button { font: inherit; font-weight: 600; min-height: 60px; padding: 0 18px; border-radius: 12px; border: 2px solid currentColor; background: none; color: inherit; }
+  nav button[aria-pressed="true"] { background: #2563eb; border-color: #2563eb; color: #fff; }
+  main { display: grid; grid-template-columns: 2fr 1fr; min-height: 0; }
+  #pad { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; background: color-mix(in srgb, CanvasText 7%, Canvas); }
+  #hint { position: absolute; inset: 0 0 auto 0; padding: 20px; font-size: 24px; font-weight: 600; pointer-events: none; }
+  #live { position: absolute; left: 20px; bottom: 16px; right: 20px; font: 16px/1.4 ui-monospace, Menlo, monospace; pointer-events: none; }
+  #scroller { overflow: auto; border-left: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+  #scroller div { padding: 28px 16px; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, Canvas); }
+  .dot { position: absolute; width: 10px; height: 10px; margin: -5px; border-radius: 50%; background: #e11d48; pointer-events: none; }
+</style>
+</head>
+<body>
+<nav id="steps"></nav>
+<main>
+  <div id="pad"><div id="hint"></div><div id="live"></div></div>
+  <div id="scroller"></div>
+</main>
+<script>
+const STEPS = [
+  ['tap', '1 Tap', 'Tap the grey area three times.'],
+  ['drag', '2 Drag', 'Slowly drag one finger in a big loop on the grey area, for about 3 seconds.'],
+  ['pinch', '3 Pinch', 'Pinch out, then in, with two fingers on the grey area.'],
+  ['two', '4 Two fingers', 'Slide two fingers up and down together on the grey area.'],
+  ['hold', '5 Hold, drag', 'Press and hold one finger still for 2 full seconds, then drag it without lifting.'],
+  ['scroll', '6 Scroll list', 'On the numbered list at the right: drag one finger up and down, then two fingers.'],
+];
+const report = location.hostname === 'localhost' ? new URLSearchParams(location.search).get('report') : null;
+const ua = navigator.userAgent;
+const browser = /Claude\//.test(ua) ? 'claudepane' : /Chrome\//.test(ua) ? 'chrome' : /Safari\//.test(ua) ? 'safari' : 'other';
+const pad = document.getElementById('pad'), nav = document.getElementById('steps'),
+  hint = document.getElementById('hint'), live = document.getElementById('live'), scroller = document.getElementById('scroller');
+for (let i = 1; i <= 60; i++) { const d = document.createElement('div'); d.textContent = 'Row ' + i; scroller.append(d); }
+
+const caps = { browser, ua, maxTouchPoints: navigator.maxTouchPoints, GestureEvent: typeof GestureEvent !== 'undefined', vw: innerWidth, vh: innerHeight };
+const log = []; const MAX = 6000; let step = 'tap', sendTimer = 0, seen = 0, stepSeen = 0;
+const zone = t => !t || !t.closest ? 'doc' : t.closest('#pad') ? 'pad' : t.closest('#scroller') ? 'list' : t.closest('nav') ? 'nav' : 'other';
+const round = v => typeof v === 'number' ? Math.round(v * 100) / 100 : v;
+
+function rec(e) {
+  seen++; stepSeen++;
+  const r = { s: step, e: e.type, t: Math.round(e.timeStamp), z: zone(e.target) };
+  for (const [k, v] of [['pt', e.pointerType], ['id', e.pointerId], ['x', e.clientX], ['y', e.clientY], ['b', e.button], ['bs', e.buttons],
+    ['dx', e.deltaX], ['dy', e.deltaY], ['dm', e.deltaMode], ['ctrl', e.ctrlKey || undefined], ['scale', e.scale], ['rot', e.rotation],
+    ['wx', e.wheelDeltaX], ['wy', e.wheelDeltaY], ['n', e.touches && e.touches.length], ['pr', e.pressure]])
+    if (v !== undefined) r[k] = round(v);
+  if (log.length < MAX) log.push(r);
+  live.textContent = stepSeen + ' events this step · last: ' + e.type + (e.pointerType ? ':' + e.pointerType : '');
+  if ((e.type === 'pointermove' && e.buttons) || e.type === 'pointerdown' || e.type === 'wheel') {
+    if (zone(e.target) === 'pad' && pad.childElementCount < 900) {
+      const b = pad.getBoundingClientRect(), d = document.createElement('i');
+      d.className = 'dot'; d.style.left = (e.clientX - b.left) + 'px'; d.style.top = (e.clientY - b.top) + 'px'; pad.append(d);
+    }
+  }
+  clearTimeout(sendTimer); sendTimer = setTimeout(send, 250);
+}
+function send() { if (report) fetch(report + '/' + browser, { method: 'POST', body: JSON.stringify({ caps, log }) }).catch(() => {}); }
+
+const TYPES = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerenter', 'pointerleave', 'gotpointercapture', 'lostpointercapture',
+  'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu', 'auxclick', 'wheel', 'scroll', 'scrollend',
+  'touchstart', 'touchmove', 'touchend', 'touchcancel', 'gesturestart', 'gesturechange', 'gestureend',
+  'dragstart', 'selectstart', 'blur', 'focus', 'resize', 'webkitmouseforcewillbegin', 'webkitmouseforcedown', 'webkitmouseforceup', 'webkitmouseforcechanged'];
+for (const t of TYPES) window.addEventListener(t, e => {
+  rec(e);
+  const inPad = zone(e.target) === 'pad' || e.type.startsWith('gesture');
+  if (inPad && (t === 'wheel' || t === 'contextmenu' || t.startsWith('touch') || t.startsWith('gesture'))) e.preventDefault();
+}, { capture: true, passive: false });
+for (const t of ['resize', 'scroll']) visualViewport && visualViewport.addEventListener(t, () => {
+  log.push({ s: step, e: 'visualViewport.' + t, t: Math.round(performance.now()), scale: round(visualViewport.scale) }); seen++; clearTimeout(sendTimer); sendTimer = setTimeout(send, 250);
+});
+
+function setStep(s) {
+  step = s; stepSeen = 0;
+  hint.textContent = STEPS.find(d => d[0] === s)[2];
+  pad.querySelectorAll('.dot').forEach(d => d.remove());
+  [...nav.children].forEach(b => b.setAttribute('aria-pressed', String(b.dataset.step === s)));
+  log.push({ s, e: 'STEP', t: Math.round(performance.now()) });
+  live.textContent = 'nothing received yet';
+  send();
+}
+STEPS.forEach(([id, label]) => {
+  const b = document.createElement('button');
+  b.textContent = label; b.dataset.step = id; b.onclick = () => setStep(id); nav.append(b);
+});
+window.__dump = () => JSON.stringify({ caps, log });
+setStep('tap');
+</script>
+</body>
+</html>
